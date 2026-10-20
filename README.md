@@ -1,4 +1,4 @@
-# 🎨 Qwen-Image 2.1 Studio (RTX 4050 6GB Laptop Edition)
+# 🎨 Qwen-Image 2.1 (uncensored) Studio (RTX 4050 6GB Laptop Edition)
 
 [![Rust](https://img.shields.io/badge/Rust-1.80%2B-orange?logo=rust)](https://www.rust-lang.org/)
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
