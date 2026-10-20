@@ -13,6 +13,7 @@ Cargo.lock
 *.log
 *.tmp
 *.lnk
+*.zip
 
 # IDE / Editor Files
 .vscode/

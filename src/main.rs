@@ -95,18 +95,29 @@ struct QwenApp {
     last_image_path: Option<PathBuf>,
 }
 
+fn resolve_path_fallback(rel: &str) -> String {
+    if Path::new(rel).exists() {
+        return rel.to_owned();
+    }
+    let parent = Path::new("..").join(rel);
+    if parent.exists() {
+        return parent.to_string_lossy().to_string();
+    }
+    rel.to_owned()
+}
+
 impl QwenApp {
     fn new(_cc: &eframe::CreationContext<'_>) -> Self {
         let (tx, rx) = channel();
         let cancel_download_flag = Arc::new(AtomicBool::new(false));
 
         let mut app = Self {
-            sd_bin_path: "bin/sd-cli.exe".to_owned(),
-            diffusion_model_path: "models/qwen-image-2.1-UC-Q4_K_M.gguf".to_owned(),
-            llm_model_path: "models/Qwen3VL-8B-Instruct-Q4_K_M.gguf".to_owned(),
-            vae_model_path: "models/qwen_image_2.1_vae_bf16.safetensors".to_owned(),
-            mmproj_model_path: "models/mmproj-Qwen3VL-8B-Instruct-F16.gguf".to_owned(),
-            lora_dir_path: "loras".to_owned(),
+            sd_bin_path: resolve_path_fallback("bin/sd-cli.exe"),
+            diffusion_model_path: resolve_path_fallback("models/qwen-image-2.1-UC-Q4_K_M.gguf"),
+            llm_model_path: resolve_path_fallback("models/Qwen3VL-8B-Instruct-Q4_K_M.gguf"),
+            vae_model_path: resolve_path_fallback("models/qwen_image_2.1_vae_bf16.safetensors"),
+            mmproj_model_path: resolve_path_fallback("models/mmproj-Qwen3VL-8B-Instruct-F16.gguf"),
+            lora_dir_path: resolve_path_fallback("loras"),
 
             prompt: "A wide-angle cinematic photograph of a bustling cyberpunk alleyway at night during a light rain. Warm amber light spills out from ramen stalls and glass storefronts onto the wet asphalt pavement, illuminating rising steam vents and glowing neon signs in cyan and magenta. Balanced exposure with visible shadow detail, sharp focus, 35mm lens photography.".to_owned(),
             negative_prompt: "blurry, out of focus, low quality, underexposed, pitch black, crushed blacks, over-saturated, deformed, bad anatomy, extra limbs, distorted proportions, watermark".to_owned(),
@@ -675,6 +686,55 @@ fn extract_zip_flat(zip_path: &Path, dest_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+#[derive(serde::Deserialize)]
+struct GhAsset {
+    name: String,
+    browser_download_url: String,
+}
+
+#[derive(serde::Deserialize)]
+struct GhRelease {
+    #[serde(default)]
+    assets: Vec<GhAsset>,
+}
+
+fn fetch_latest_cuda_asset_urls(client: &reqwest::blocking::Client) -> (String, String) {
+    let fallback_engine = "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-975-95b3090/sd-master-95b3090-bin-win-cuda12-x64.zip".to_owned();
+    let fallback_cudart = "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-975-95b3090/cudart-sd-bin-win-cu12-x64.zip".to_owned();
+
+    let api_url = "https://api.github.com/repos/leejet/stable-diffusion.cpp/releases/latest";
+    let resp = match client
+        .get(api_url)
+        .header("User-Agent", "QwenImageStudio/0.2.0")
+        .header("Accept", "application/vnd.github.v3+json")
+        .send()
+    {
+        Ok(r) if r.status().is_success() => r,
+        _ => return (fallback_engine, fallback_cudart),
+    };
+
+    let release: GhRelease = match resp.json() {
+        Ok(rel) => rel,
+        Err(_) => return (fallback_engine, fallback_cudart),
+    };
+
+    let engine_url = release
+        .assets
+        .iter()
+        .find(|a| a.name.ends_with("win-cuda12-x64.zip") || (a.name.contains("cuda12") && a.name.ends_with(".zip")))
+        .map(|a| a.browser_download_url.clone())
+        .unwrap_or(fallback_engine);
+
+    let cudart_url = release
+        .assets
+        .iter()
+        .find(|a| a.name.contains("cudart") && a.name.contains("cu12") && a.name.ends_with(".zip"))
+        .map(|a| a.browser_download_url.clone())
+        .unwrap_or(fallback_cudart);
+
+    (engine_url, cudart_url)
+}
+
 fn run_download_pipeline(tx: &Sender<WorkerMsg>, cancel_flag: Arc<AtomicBool>) -> Result<String, String> {
     let client = reqwest::blocking::Client::builder()
         .user_agent("QwenImageStudio/0.2.0")
@@ -685,17 +745,20 @@ fn run_download_pipeline(tx: &Sender<WorkerMsg>, cancel_flag: Arc<AtomicBool>) -
     let total_steps = 5;
 
     // 1. CUDA 12 Binaries
-    if !Path::new("bin/sd-cli.exe").exists() {
-        let _ = tx.send(WorkerMsg::Log(">>> Step 1/5: Downloading CUDA 12 Engine & DLLs...".into()));
+    let sd_path = PathBuf::from(resolve_path_fallback("bin/sd-cli.exe"));
+    if !sd_path.exists() {
+        let _ = tx.send(WorkerMsg::Log(">>> Step 1/5: Resolving latest CUDA 12 Engine & DLLs...".into()));
+        let (engine_url, cudart_url) = fetch_latest_cuda_asset_urls(&client);
+
         let zip_sd = PathBuf::from("bin/sd-cuda12.zip");
         let zip_cu = PathBuf::from("bin/cudart-cu12.zip");
 
         // Download main engine zip
         download_file_resumable(
             &client,
-            "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-8ebbf90/bin-win-cuda12-x64.zip",
+            &engine_url,
             &zip_sd,
-            "CUDA 12 Engine (bin-win-cuda12-x64.zip)",
+            "CUDA 12 Engine (sd-cli & core binaries)",
             1,
             total_steps,
             tx,
@@ -705,9 +768,9 @@ fn run_download_pipeline(tx: &Sender<WorkerMsg>, cancel_flag: Arc<AtomicBool>) -
         // Download CUDA runtime DLLs zip
         download_file_resumable(
             &client,
-            "https://github.com/leejet/stable-diffusion.cpp/releases/download/master-8ebbf90/cudart-sd-bin-win-cu12-x64.zip",
+            &cudart_url,
             &zip_cu,
-            "CUDA 12 Runtime DLLs (cudart-sd-bin-win-cu12-x64.zip)",
+            "CUDA 12 Runtime DLLs",
             1,
             total_steps,
             tx,
@@ -727,56 +790,70 @@ fn run_download_pipeline(tx: &Sender<WorkerMsg>, cancel_flag: Arc<AtomicBool>) -
         let _ = tx.send(WorkerMsg::Log(">>> Step 1/5: CUDA 12 binaries already verified.".into()));
     }
 
+    let download_model = |rel_dest: &str, url: &str, label: &str, idx: usize, min_size: u64| -> Result<(), String> {
+        let resolved = resolve_path_fallback(rel_dest);
+        let p = PathBuf::from(&resolved);
+        let size = if p.exists() {
+            p.metadata().map(|m| m.len()).unwrap_or(0)
+        } else {
+            0
+        };
+
+        if size >= min_size {
+            let _ = tx.send(WorkerMsg::Log(format!(
+                ">>> Step {idx}/5: {label} already verified ({}).",
+                format_bytes(size)
+            )));
+            let _ = tx.send(WorkerMsg::DownloadProgress(FileDownloadProgress {
+                file_index: idx,
+                total_files: total_steps,
+                file_name: label.to_owned(),
+                downloaded_bytes: size,
+                total_bytes: size,
+                speed_mb_s: 0.0,
+                eta_seconds: 0,
+                status_text: "Already verified".to_owned(),
+            }));
+            return Ok(());
+        }
+
+        download_file_resumable(&client, url, &p, label, idx, total_steps, tx, &cancel_flag)
+    };
+
     // 2. Diffusion model (4.60 GB)
-    let diff_path = PathBuf::from("models/qwen-image-2.1-UC-Q4_K_M.gguf");
-    download_file_resumable(
-        &client,
+    download_model(
+        "models/qwen-image-2.1-UC-Q4_K_M.gguf",
         "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-Quantized/resolve/main/qwen-image-2.1-UC-Q4_K_M.gguf",
-        &diff_path,
         "qwen-image-2.1-UC-Q4_K_M.gguf (4.60 GB)",
         2,
-        total_steps,
-        tx,
-        &cancel_flag,
+        4_000_000_000,
     )?;
 
     // 3. Text Encoder (5.02 GB)
-    let llm_path = PathBuf::from("models/Qwen3VL-8B-Instruct-Q4_K_M.gguf");
-    download_file_resumable(
-        &client,
+    download_model(
+        "models/Qwen3VL-8B-Instruct-Q4_K_M.gguf",
         "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/Qwen3VL-8B-Instruct-Q4_K_M.gguf",
-        &llm_path,
         "Qwen3VL-8B-Instruct-Q4_K_M.gguf (5.02 GB)",
         3,
-        total_steps,
-        tx,
-        &cancel_flag,
+        4_500_000_000,
     )?;
 
     // 4. VAE (676 MB)
-    let vae_path = PathBuf::from("models/qwen_image_2.1_vae_bf16.safetensors");
-    download_file_resumable(
-        &client,
+    download_model(
+        "models/qwen_image_2.1_vae_bf16.safetensors",
         "https://huggingface.co/abenzerps/Qwen-Image-2.1-Uncensored-Quantized/resolve/main/vae/qwen_image_2.1_vae_bf16.safetensors",
-        &vae_path,
         "qwen_image_2.1_vae_bf16.safetensors (676 MB)",
         4,
-        total_steps,
-        tx,
-        &cancel_flag,
+        600_000_000,
     )?;
 
     // 5. Vision Projector (1.16 GB F16)
-    let mmproj_path = PathBuf::from("models/mmproj-Qwen3VL-8B-Instruct-F16.gguf");
-    download_file_resumable(
-        &client,
+    download_model(
+        "models/mmproj-Qwen3VL-8B-Instruct-F16.gguf",
         "https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/main/mmproj-Qwen3VL-8B-Instruct-F16.gguf",
-        &mmproj_path,
         "mmproj-Qwen3VL-8B-Instruct-F16.gguf (1.16 GB)",
         5,
-        total_steps,
-        tx,
-        &cancel_flag,
+        1_000_000_000,
     )?;
 
     Ok("All 5 files verified & downloaded successfully.".to_owned())
@@ -800,6 +877,11 @@ impl eframe::App for QwenApp {
                 }
                 WorkerMsg::DownloadFinished(res) => {
                     self.download_in_progress = false;
+                    self.sd_bin_path = resolve_path_fallback("bin/sd-cli.exe");
+                    self.diffusion_model_path = resolve_path_fallback("models/qwen-image-2.1-UC-Q4_K_M.gguf");
+                    self.llm_model_path = resolve_path_fallback("models/Qwen3VL-8B-Instruct-Q4_K_M.gguf");
+                    self.vae_model_path = resolve_path_fallback("models/qwen_image_2.1_vae_bf16.safetensors");
+                    self.mmproj_model_path = resolve_path_fallback("models/mmproj-Qwen3VL-8B-Instruct-F16.gguf");
                     match res {
                         Ok(msg) => {
                             self.status_line = msg.clone();

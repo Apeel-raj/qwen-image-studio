@@ -1,6 +1,6 @@
 [package]
 name = "qwen_image_studio"
-version = "0.2.0"
+version = "0.2.1"
 edition = "2021"
 authors = ["Apeel-raj"]
 description = "High-performance native Rust GUI Studio for Qwen-Image 2.1 Uncensored, tuned for RTX 4050 6GB VRAM & 16GB RAM laptops."
@@ -11,5 +11,7 @@ eframe = "0.29"
 egui = "0.29"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg", "webp"] }
 rfd = "0.15"
-reqwest = { version = "0.13", default-features = false, features = ["blocking", "default-tls"] }
+reqwest = { version = "0.13", default-features = false, features = ["blocking", "default-tls", "json"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
 zip = { version = "9.0", default-features = false, features = ["deflate"] }
