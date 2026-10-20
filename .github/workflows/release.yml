@@ -1,0 +1,54 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Cargo dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build Release Binary
+        run: cargo build --release
+
+      - name: Package Release
+        run: |
+          mkdir dist
+          cp target/release/qwen_image_studio.exe dist/
+          cp qwen_icon.ico dist/
+          cp qwen_logo.png dist/
+          cp README.md dist/
+          cp LICENSE dist/
+          cd dist
+          Compress-Archive -Path * -DestinationPath ../QwenImageStudio-Windows-x64.zip
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        if: startsWith(github.ref, 'refs/tags/')
+        with:
+          files: |
+            QwenImageStudio-Windows-x64.zip
+            target/release/qwen_image_studio.exe
+          generate_release_notes: true

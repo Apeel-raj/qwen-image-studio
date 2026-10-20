@@ -1,0 +1,21 @@
+# Rust Build Output
+/target/
+**/*.rs.bk
+Cargo.lock
+
+# Model Weights & CUDA Binaries (~11 GB, downloaded via in-app 1-click downloader)
+/models/
+/bin/
+/loras/
+
+# Generated Outputs & Temporary Files
+/output/
+*.log
+*.tmp
+*.lnk
+
+# IDE / Editor Files
+.vscode/
+.idea/
+*.swp
+*.swo
